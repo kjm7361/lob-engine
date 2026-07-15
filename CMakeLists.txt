@@ -28,9 +28,11 @@ target_include_directories(lob
 
 add_library(lob_backtest
     src/backtest/market_event.cpp
+    src/backtest/market_data_replay.cpp
     src/backtest/portfolio.cpp
     src/backtest/performance.cpp
     src/backtest/runner.cpp
+    src/backtest/backtest_engine.cpp
 )
 
 target_include_directories(lob_backtest
@@ -48,6 +50,9 @@ target_link_libraries(simple_session PRIVATE lob)
 
 add_executable(backtest_demo examples/backtest_demo.cpp)
 target_link_libraries(backtest_demo PRIVATE lob_backtest)
+
+add_executable(simple_backtest examples/simple_backtest.cpp)
+target_link_libraries(simple_backtest PRIVATE lob_backtest)
 
 # ── Tests and benchmarks ──────────────────────────────────────────────────────
 

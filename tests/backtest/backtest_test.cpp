@@ -1,12 +1,17 @@
-// Backtest module unit tests: portfolio accounting, performance metrics, runner integration.
+// Backtest module unit tests: portfolio accounting, performance metrics, runner integration,
+// market-data CSV replay, and BacktestEngine.
 #include <gtest/gtest.h>
 
 #include <deque>
 #include <fstream>
 #include <numeric>
 
+#include "lob/backtest/backtest_engine.hpp"
+#include "lob/backtest/market_data_event.hpp"
+#include "lob/backtest/market_data_replay.hpp"
 #include "lob/backtest/market_event.hpp"
 #include "lob/backtest/performance.hpp"
+#include "lob/backtest/performance_report.hpp"
 #include "lob/backtest/portfolio.hpp"
 #include "lob/backtest/runner.hpp"
 #include "lob/backtest/strategy.hpp"
@@ -213,4 +218,159 @@ TEST(LoadCSV, RoundTrip) {
     EXPECT_EQ(to_uint(events[0].volume),       500u);
 
     EXPECT_EQ(to_int (events[1].last_trade),   101);
+}
+
+// ── MarketDataReplay tests ────────────────────────────────────────────────────
+
+TEST(MarketDataCSV, ParsesAddAndMarketEvents) {
+    const std::string path = "/tmp/lob_mdr_test.csv";
+    {
+        std::ofstream f(path);
+        f << "timestamp,event_type,side,price,quantity\n";
+        f << "1,add,sell,10005,50\n";
+        f << "2,add,buy,9998,40\n";
+        f << "3,market,buy,0,10\n";
+    }
+
+    auto events = load_market_data_csv(path);
+    ASSERT_EQ(events.size(), 3u);
+
+    EXPECT_EQ(to_uint(events[0].timestamp), 1u);
+    EXPECT_EQ(events[0].event_type, MarketDataEventType::Add);
+    EXPECT_EQ(events[0].side, Side::Sell);
+    EXPECT_EQ(to_int(events[0].price), 10005);
+    EXPECT_EQ(to_uint(events[0].quantity), 50u);
+
+    EXPECT_EQ(events[1].side, Side::Buy);
+    EXPECT_EQ(to_int(events[1].price), 9998);
+
+    EXPECT_EQ(events[2].event_type, MarketDataEventType::Market);
+    EXPECT_EQ(to_uint(events[2].quantity), 10u);
+}
+
+TEST(MarketDataCSV, SkipsMalformedRows) {
+    const std::string path = "/tmp/lob_mdr_malformed.csv";
+    {
+        std::ofstream f(path);
+        f << "timestamp,event_type,side,price,quantity\n";
+        f << "1,add,sell,10000,100\n";
+        f << "not,valid,row\n";       // too few columns
+        f << "2,unknown,buy,100,5\n"; // unknown event_type
+        f << "3,add,buy,9990,20\n";
+    }
+
+    auto events = load_market_data_csv(path);
+    ASSERT_EQ(events.size(), 2u);
+    EXPECT_EQ(to_uint(events[1].timestamp), 3u);
+}
+
+TEST(MarketDataCSV, EmptyFileReturnsEmpty) {
+    const std::string path = "/tmp/lob_mdr_empty.csv";
+    { std::ofstream f(path); f << "timestamp,event_type,side,price,quantity\n"; }
+
+    auto events = load_market_data_csv(path);
+    EXPECT_TRUE(events.empty());
+}
+
+TEST(MarketDataReplay, SellThenMarketBuy_OneTrade) {
+    // Sell limit @ 100, qty=10; market buy qty=5 → 1 trade, qty=5, @100.
+    std::vector<MarketDataEvent> events = {
+        {Timestamp{1}, MarketDataEventType::Add,    Side::Sell, Price{100}, Quantity{10}},
+        {Timestamp{2}, MarketDataEventType::Market,  Side::Buy,  Price{0},   Quantity{5}},
+    };
+
+    auto result = replay(events);
+
+    EXPECT_EQ(result.events_replayed,  2u);
+    EXPECT_EQ(result.trades_generated, 1u);
+    EXPECT_EQ(result.orders_rejected,  0u);
+    ASSERT_EQ(result.trades.size(),    1u);
+    EXPECT_EQ(to_int(result.trades[0].price),    100);
+    EXPECT_EQ(to_uint(result.trades[0].quantity),  5u);
+}
+
+TEST(MarketDataReplay, EmptyEvents_NoTrades) {
+    auto result = replay({});
+    EXPECT_EQ(result.events_replayed,  0u);
+    EXPECT_EQ(result.trades_generated, 0u);
+    EXPECT_TRUE(result.trades.empty());
+}
+
+TEST(MarketDataReplay, MarketOrderNoLiquidity_Rejected) {
+    // Market buy with nothing on the ask side → rejected.
+    std::vector<MarketDataEvent> events = {
+        {Timestamp{1}, MarketDataEventType::Market, Side::Buy, Price{0}, Quantity{5}},
+    };
+
+    auto result = replay(events);
+    EXPECT_EQ(result.trades_generated, 0u);
+    EXPECT_EQ(result.orders_rejected,  1u);
+}
+
+TEST(MarketDataReplay, MultipleTradesFromOneSweep) {
+    // Two resting sells at different prices, one market buy that sweeps both.
+    std::vector<MarketDataEvent> events = {
+        {Timestamp{1}, MarketDataEventType::Add,    Side::Sell, Price{100}, Quantity{5}},
+        {Timestamp{2}, MarketDataEventType::Add,    Side::Sell, Price{101}, Quantity{5}},
+        {Timestamp{3}, MarketDataEventType::Market,  Side::Buy,  Price{0},   Quantity{10}},
+    };
+
+    auto result = replay(events);
+    EXPECT_EQ(result.trades_generated, 2u);
+    EXPECT_EQ(to_int(result.trades[0].price), 100);
+    EXPECT_EQ(to_int(result.trades[1].price), 101);
+}
+
+// ── BacktestEngine tests ──────────────────────────────────────────────────────
+
+// Minimal strategy: buys on tick 0, sells on tick 1, does nothing after.
+class EngineTestStrategy : public Strategy {
+    int tick_{0};
+   public:
+    std::string name() const override { return "EngineTest"; }
+    void on_event(const MarketEvent& e) override {
+        if (tick_ == 0)
+            submit(Side::Buy,  OrderType::Market, Price{0}, Quantity{5}, e.timestamp);
+        if (tick_ == 1)
+            submit(Side::Sell, OrderType::Market, Price{0}, Quantity{5}, e.timestamp);
+        ++tick_;
+    }
+    void on_fill(const Fill&) override {}
+};
+
+TEST(BacktestEngine, RunProducesReport) {
+    auto events = synthetic_feed(1000, 10, 42);
+    EngineTestStrategy strategy;
+    BacktestEngine engine(100'000.0);
+
+    auto report = engine.run(strategy, events);
+
+    EXPECT_EQ(report.trade_count, 2);
+    EXPECT_EQ(engine.portfolio().trade_count(), 2);
+    EXPECT_EQ(engine.portfolio().equity_curve().size(), events.size());
+}
+
+TEST(BacktestEngine, NetPositionFlatAfterRoundTrip) {
+    auto events = synthetic_feed(1000, 10, 42);
+    EngineTestStrategy strategy;
+    BacktestEngine engine(100'000.0);
+    engine.run(strategy, events);
+
+    EXPECT_NEAR(engine.portfolio().position(), 0.0, 1e-9);
+}
+
+TEST(BacktestEngine, ReportMatchesKnownScenario) {
+    // Fixed scenario: buy 5 units at the ask on tick 0, sell 5 at the bid on tick 1.
+    // synthetic_feed(1000, 10, 42): first mid = round(1000 + noise - kappa*0).
+    // The round-trip PnL is negative (paid ask, received bid — always a spread loss).
+    auto events = synthetic_feed(1000, 10, 42);
+    EngineTestStrategy strategy;
+    BacktestEngine engine(50'000.0);
+    auto report = engine.run(strategy, events);
+
+    EXPECT_EQ(report.trade_count, 2);
+    EXPECT_EQ(engine.portfolio().equity_curve().size(), 10u);
+    // Cash accounting consistency: starting_cash + realized_pnl ≈ cash (no open position).
+    EXPECT_NEAR(engine.portfolio().cash(),
+                50'000.0 + engine.portfolio().realized_pnl(), 1e-6);
 }

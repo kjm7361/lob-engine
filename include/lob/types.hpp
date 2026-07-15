@@ -1,22 +1,22 @@
+// Core types: strong typedefs for OrderId, Price (integer ticks), Quantity, Timestamp, Side.
 #pragma once
 
 #include <cstdint>
 
 namespace lob {
 
-// Strong typedefs via enum class trick — zero overhead, type-safe, no implicit
-// conversions between OrderId/Price/Quantity.
-
+// Wrapping primitives in enum classes so you can't accidentally pass a Price
+// where an OrderId is expected. Zero runtime cost.
 enum class OrderId : uint64_t {};
-enum class Price : int64_t {};   // integer ticks — no floating-point on hot path
+enum class Price : int64_t {};   // always integer ticks, never a double
 enum class Quantity : uint64_t {};
-enum class Timestamp : uint64_t {};  // nanoseconds since epoch
+enum class Timestamp : uint64_t {};  // nanoseconds
 
 enum class Side : uint8_t { Buy, Sell };
 
 enum class OrderType : uint8_t { Limit, Market };
 
-// Helpers to convert strong typedefs to/from their underlying types.
+// Use these when you need to do arithmetic on the underlying value.
 [[nodiscard]] constexpr uint64_t to_uint(OrderId id) noexcept {
     return static_cast<uint64_t>(id);
 }

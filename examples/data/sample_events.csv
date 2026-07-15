@@ -1,0 +1,10 @@
+timestamp,event_type,side,price,quantity
+1,add,sell,10005,50
+2,add,sell,10003,30
+3,add,buy,9998,40
+4,add,buy,10000,20
+5,market,buy,0,25
+6,add,sell,10002,15
+7,market,sell,0,10
+8,add,buy,10001,100
+9,market,buy,0,30

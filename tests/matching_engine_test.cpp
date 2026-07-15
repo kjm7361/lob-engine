@@ -1,3 +1,4 @@
+// MatchingEngine unit tests: FIFO priority, partial fills, market sweeps, cancel, modify, fuzz.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -7,8 +8,6 @@
 #include "lob/matching_engine.hpp"
 
 using namespace lob;
-
-// ── Test fixture + helpers ────────────────────────────────────────────────────
 
 struct TestHandler {
     std::vector<TradeEvent>     trades;
@@ -54,8 +53,6 @@ struct Pool {
     }
 };
 
-// ── Add / resting order ───────────────────────────────────────────────────────
-
 TEST(MatchingEngine, LimitOrderRestsWhenNoOpposideSide) {
     TestHandler h;
     MatchingEngine me(h.make());
@@ -68,8 +65,6 @@ TEST(MatchingEngine, LimitOrderRestsWhenNoOpposideSide) {
     EXPECT_EQ(to_int(*me.book().best_bid()), 100);
     EXPECT_FALSE(me.book().best_ask().has_value());
 }
-
-// ── FIFO priority at same price ───────────────────────────────────────────────
 
 TEST(MatchingEngine, FifoPriorityAtSamePrice) {
     // Two resting bids at 100 (order 1 then 2).
@@ -95,8 +90,6 @@ TEST(MatchingEngine, FifoPriorityAtSamePrice) {
     EXPECT_EQ(to_uint(me.book().find(OrderId{2})->remaining_quantity), 10u);
 }
 
-// ── Price priority across levels ─────────────────────────────────────────────
-
 TEST(MatchingEngine, PricePriorityAcrossLevels) {
     // Resting bids at 102 (better) and 100 (worse).
     // Incoming sell at 100 fills the 102 level first.
@@ -120,8 +113,6 @@ TEST(MatchingEngine, PricePriorityAcrossLevels) {
     EXPECT_EQ(to_uint(h.trades[1].quantity), 3u);
 }
 
-// ── Partial fill ──────────────────────────────────────────────────────────────
-
 TEST(MatchingEngine, PartialFillLeavesRemainderOnBook) {
     TestHandler h;
     MatchingEngine me(h.make());
@@ -142,8 +133,6 @@ TEST(MatchingEngine, PartialFillLeavesRemainderOnBook) {
     EXPECT_EQ(to_uint(depth[0].total_quantity), 13u);
 }
 
-// ── Market order sweeping multiple levels ─────────────────────────────────────
-
 TEST(MatchingEngine, MarketOrderSweepsMultipleLevels) {
     TestHandler h;
     MatchingEngine me(h.make());
@@ -159,14 +148,11 @@ TEST(MatchingEngine, MarketOrderSweepsMultipleLevels) {
     EXPECT_EQ(to_uint(h.trades[0].quantity), 5u);
     EXPECT_EQ(to_uint(h.trades[1].quantity), 5u);
     EXPECT_EQ(to_uint(h.trades[2].quantity), 2u);
-    // Orders 1,2 fully filled; order 3 has 3 remaining.
     EXPECT_EQ(me.book().find(OrderId{1}), nullptr);
     EXPECT_EQ(me.book().find(OrderId{2}), nullptr);
     ASSERT_NE(me.book().find(OrderId{3}), nullptr);
     EXPECT_EQ(to_uint(me.book().find(OrderId{3})->remaining_quantity), 3u);
 }
-
-// ── Market order against empty book ──────────────────────────────────────────
 
 TEST(MatchingEngine, MarketOrderEmptyBookRejected) {
     TestHandler h;
@@ -182,8 +168,6 @@ TEST(MatchingEngine, MarketOrderEmptyBookRejected) {
     // Must not rest on book.
     EXPECT_FALSE(me.book().best_bid().has_value());
 }
-
-// ── Cancel ────────────────────────────────────────────────────────────────────
 
 TEST(MatchingEngine, CancelRemovesOrderAndUpdatesAggregates) {
     TestHandler h;
@@ -214,8 +198,6 @@ TEST(MatchingEngine, CancelUnknownIdFiresRejected) {
     EXPECT_EQ(h.rejected[0].reason, RejectReason::UnknownId);
 }
 
-// ── Modify: qty decrease keeps priority ──────────────────────────────────────
-
 TEST(MatchingEngine, ModifyQtyDecreaseKeepsFifoPriority) {
     // order 1 then order 2 at same price.  Decrease order 1's qty.
     // Incoming taker should still fill order 1 first.
@@ -228,7 +210,6 @@ TEST(MatchingEngine, ModifyQtyDecreaseKeepsFifoPriority) {
     me.submit(o1);
     me.submit(o2);
 
-    // Decrease order 1 quantity (keeps priority).
     me.book().modify_order(OrderId{1}, std::nullopt, Quantity{5}, nullptr);
 
     me.submit(p.limit(3, Side::Sell, 100, 5));
@@ -257,8 +238,6 @@ TEST(MatchingEngine, ModifyQtyIncreaseLoesesPriority) {
     EXPECT_EQ(to_uint(h.trades[0].maker_id), 2u);
 }
 
-// ── Crossing limit rests remainder ───────────────────────────────────────────
-
 TEST(MatchingEngine, CrossingLimitRestsRemainder) {
     TestHandler h;
     MatchingEngine me(h.make());
@@ -275,8 +254,6 @@ TEST(MatchingEngine, CrossingLimitRestsRemainder) {
     EXPECT_EQ(to_int(*me.book().best_bid()), 101);
     EXPECT_EQ(to_uint(me.book().find(OrderId{2})->remaining_quantity), 10u);
 }
-
-// ── Trade events: correct maker/taker/price/qty ───────────────────────────────
 
 TEST(MatchingEngine, TradeEventFields) {
     TestHandler h;
@@ -295,8 +272,6 @@ TEST(MatchingEngine, TradeEventFields) {
     EXPECT_EQ(to_uint(t.timestamp), 2000u);
 }
 
-// ── Zero-quantity order rejected ──────────────────────────────────────────────
-
 TEST(MatchingEngine, ZeroQuantityRejected) {
     TestHandler h;
     MatchingEngine me(h.make());
@@ -310,11 +285,9 @@ TEST(MatchingEngine, ZeroQuantityRejected) {
     EXPECT_FALSE(me.book().best_bid().has_value());
 }
 
-// ── Fuzz: aggregate invariant check ──────────────────────────────────────────
 // Performs 10k random operations and verifies after each that:
 //   per-level total_quantity == sum of remaining_quantity of all resting orders
 // against a naive reference map.
-
 TEST(MatchingEngine, FuzzAggregateInvariants) {
     std::mt19937 rng(42);
     auto randi = [&](int lo, int hi) -> int {
@@ -364,7 +337,6 @@ TEST(MatchingEngine, FuzzAggregateInvariants) {
         int op = randi(0, 2);
 
         if (op == 0 || live_ids.empty()) {
-            // Add a limit order.
             Side     side  = randi(0, 1) ? Side::Buy : Side::Sell;
             int64_t  price = randi(95, 105);
             uint64_t qty   = static_cast<uint64_t>(randi(1, 20));
@@ -378,7 +350,6 @@ TEST(MatchingEngine, FuzzAggregateInvariants) {
                 live_ids.push_back(id);
             }
         } else if (op == 1) {
-            // Cancel a random live order.
             size_t   idx = static_cast<size_t>(randi(0, static_cast<int>(live_ids.size()) - 1));
             uint64_t id  = live_ids[idx];
             if (me.book().find(OrderId{id}) != nullptr) {
@@ -386,7 +357,6 @@ TEST(MatchingEngine, FuzzAggregateInvariants) {
             }
             live_ids.erase(live_ids.begin() + static_cast<ptrdiff_t>(idx));
         } else {
-            // Submit a market order (may sweep some live orders).
             Side     side = randi(0, 1) ? Side::Buy : Side::Sell;
             uint64_t qty  = static_cast<uint64_t>(randi(1, 5));
             me.submit(p.market(next_id++, side, qty, static_cast<uint64_t>(i)));

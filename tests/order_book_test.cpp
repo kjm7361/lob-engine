@@ -1,10 +1,9 @@
+// OrderBook unit tests: add, cancel, modify, depth snapshot, and find.
 #include <gtest/gtest.h>
 
 #include "lob/order_book.hpp"
 
 using namespace lob;
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 static Order make_order(uint64_t id, Side side, int64_t price, uint64_t qty,
                         uint64_t ts = 0) {
@@ -18,8 +17,6 @@ static Order make_order(uint64_t id, Side side, int64_t price, uint64_t qty,
     o.timestamp         = Timestamp{ts};
     return o;
 }
-
-// ── Basic add / best bid/ask ──────────────────────────────────────────────────
 
 TEST(OrderBook, AddBidUpdatesbestBid) {
     OrderBook book;
@@ -61,8 +58,6 @@ TEST(OrderBook, BestAskIsLowestPrice) {
     EXPECT_EQ(to_int(*book.best_ask()), 101);
 }
 
-// ── Cancel ────────────────────────────────────────────────────────────────────
-
 TEST(OrderBook, CancelRemovesOrder) {
     OrderBook book;
     Order o = make_order(42, Side::Buy, 100, 10);
@@ -103,8 +98,6 @@ TEST(OrderBook, CancelLastOrderInLevelRemovesLevel) {
     EXPECT_TRUE(book.bid_depth(5).empty());
 }
 
-// ── Modify ────────────────────────────────────────────────────────────────────
-
 TEST(OrderBook, ModifyQtyDecreaseKeepsPriority) {
     // Two orders at same price; decrease first order's qty.
     // First order must still be at the front after the decrease.
@@ -118,12 +111,10 @@ TEST(OrderBook, ModifyQtyDecreaseKeepsPriority) {
     ASSERT_NE(live, nullptr);
     EXPECT_EQ(to_uint(live->remaining_quantity), 5u);
 
-    // FIFO front should still be order 1.
     auto depth = book.bid_depth(5);
     ASSERT_EQ(depth.size(), 1u);
     EXPECT_EQ(to_uint(depth[0].total_quantity), 15u);  // 5 + 10
 
-    // Confirm order 1 is still at front by cancelling it and checking aggregate.
     book.cancel_order(OrderId{1});
     depth = book.bid_depth(5);
     EXPECT_EQ(to_uint(depth[0].total_quantity), 10u);
@@ -149,8 +140,6 @@ TEST(OrderBook, ModifyUnknownIdReturnsNull) {
     Order dummy{};
     EXPECT_EQ(book.modify_order(OrderId{999}, std::nullopt, std::nullopt, &dummy), nullptr);
 }
-
-// ── Depth snapshot ────────────────────────────────────────────────────────────
 
 TEST(OrderBook, DepthSnapshotOrdering) {
     OrderBook book;
@@ -178,14 +167,11 @@ TEST(OrderBook, DepthSnapshotLimitN) {
     auto depth = book.bid_depth(3);
     EXPECT_EQ(depth.size(), 3u);
 
-    // Clean up
     for (int i = 1; i <= 5; ++i) {
         Order* o = book.find(OrderId{static_cast<uint64_t>(i)});
         if (o) { book.cancel_order(OrderId{static_cast<uint64_t>(i)}); delete o; }
     }
 }
-
-// ── Find ──────────────────────────────────────────────────────────────────────
 
 TEST(OrderBook, FindReturnsLiveOrder) {
     OrderBook book;

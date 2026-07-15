@@ -1,3 +1,4 @@
+// simple_session: end-to-end demo — build a book, cross the spread, sweep with a market, cancel.
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -6,8 +7,6 @@
 #include "lob/matching_engine.hpp"
 
 using namespace lob;
-
-// ── Formatting helpers ────────────────────────────────────────────────────────
 
 static std::string side_str(Side s) {
     return s == Side::Buy ? "BUY " : "SELL";
@@ -46,8 +45,6 @@ static void print_book(const OrderBook& book, int levels = 5) {
         std::cout << "  (one side empty)\n";
     }
 }
-
-// ── Main demo ─────────────────────────────────────────────────────────────────
 
 int main() {
     std::vector<std::unique_ptr<Order>> pool;

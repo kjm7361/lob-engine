@@ -1,10 +1,9 @@
+// OrderBook + PriceLevel implementation: intrusive list ops and std::map level management.
 #include "lob/order_book.hpp"
 
 #include <cassert>
 
 namespace lob {
-
-// ── PriceLevel ────────────────────────────────────────────────────────────────
 
 void PriceLevel::append(Order* o) noexcept {
     o->prev = tail_;
@@ -12,7 +11,7 @@ void PriceLevel::append(Order* o) noexcept {
     if (tail_) {
         tail_->next = o;
     } else {
-        head_ = o;
+        head_ = o;  // first order at this level
     }
     tail_ = o;
     total_quantity_ = Quantity{to_uint(total_quantity_) + to_uint(o->remaining_quantity)};
@@ -23,12 +22,12 @@ void PriceLevel::remove(Order* o) noexcept {
     if (o->prev) {
         o->prev->next = o->next;
     } else {
-        head_ = o->next;
+        head_ = o->next;  // o was at the front
     }
     if (o->next) {
         o->next->prev = o->prev;
     } else {
-        tail_ = o->prev;
+        tail_ = o->prev;  // o was at the back
     }
     o->prev = nullptr;
     o->next = nullptr;
@@ -40,7 +39,7 @@ void PriceLevel::adjust_quantity(Order* o, Quantity new_qty) noexcept {
     uint64_t old_q = to_uint(o->remaining_quantity);
     uint64_t new_q = to_uint(new_qty);
     uint64_t agg   = to_uint(total_quantity_);
-    // Unsigned-safe delta: avoid wrapping when new_q < old_q.
+    // Handle both directions explicitly to avoid unsigned wrap-around.
     if (new_q >= old_q) {
         total_quantity_ = Quantity{agg + (new_q - old_q)};
     } else {
@@ -48,8 +47,6 @@ void PriceLevel::adjust_quantity(Order* o, Quantity new_qty) noexcept {
     }
     o->remaining_quantity = new_qty;
 }
-
-// ── OrderBook internals ───────────────────────────────────────────────────────
 
 void OrderBook::insert_into_side(Order* o) {
     auto& side_map = (o->side == Side::Buy) ? bids_ : asks_;
@@ -63,13 +60,11 @@ void OrderBook::remove_from_side(Order* o) {
     if (it != side_map.end()) {
         it->second.remove(o);
         if (it->second.empty()) {
-            side_map.erase(it);
+            side_map.erase(it);  // keep the map clean so begin()/rbegin() are always valid
         }
     }
     index_.erase(to_uint(o->id));
 }
-
-// ── Public API ────────────────────────────────────────────────────────────────
 
 void OrderBook::add_order(Order* o) { insert_into_side(o); }
 
@@ -96,7 +91,8 @@ Order* OrderBook::modify_order(OrderId id, std::optional<Price> new_price,
     bool loses_priority = price_changed || qty_increased;
 
     if (loses_priority) {
-        // Cancel + reinsert at tail.  Caller must supply new_order.
+        // Loses queue position — cancel and reinsert at the back.
+        // Caller supplies a fresh Order node because the old pointer is unlinked.
         assert(new_order != nullptr);
         *new_order                    = *existing;
         new_order->price              = target_price;
@@ -108,26 +104,22 @@ Order* OrderBook::modify_order(OrderId id, std::optional<Price> new_price,
         insert_into_side(new_order);
         return new_order;
     } else {
-        // Quantity decrease: patch in-place so position in queue is unchanged.
+        // Quantity decrease: patch in-place so the order keeps its FIFO position.
         auto& side_map = (existing->side == Side::Buy) ? bids_ : asks_;
         side_map.at(existing->price).adjust_quantity(existing, target_qty);
         return existing;
     }
 }
 
-// ── best bid / ask ────────────────────────────────────────────────────────────
-
 std::optional<Price> OrderBook::best_bid() const noexcept {
     if (bids_.empty()) return std::nullopt;
-    return bids_.rbegin()->first;
+    return bids_.rbegin()->first;  // highest bid is at the end of an ascending map
 }
 
 std::optional<Price> OrderBook::best_ask() const noexcept {
     if (asks_.empty()) return std::nullopt;
     return asks_.begin()->first;
 }
-
-// ── depth snapshots ───────────────────────────────────────────────────────────
 
 std::vector<DepthLevel> OrderBook::bid_depth(size_t n) const {
     std::vector<DepthLevel> out;
@@ -148,8 +140,6 @@ std::vector<DepthLevel> OrderBook::ask_depth(size_t n) const {
     }
     return out;
 }
-
-// ── lookup ────────────────────────────────────────────────────────────────────
 
 Order* OrderBook::find(OrderId id) noexcept {
     auto it = index_.find(to_uint(id));

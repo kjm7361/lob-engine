@@ -1,4 +1,5 @@
 build/
+build_release/
 .build/
 cmake-build-*/
 *.o
@@ -6,6 +7,7 @@ cmake-build-*/
 *.so
 *.dylib
 compile_commands.json
+benchmark_results.csv
 .cache/
 .DS_Store
 .idea/

@@ -1,26 +1,22 @@
+// Order: POD struct for a single resting order, with intrusive doubly-linked list pointers.
 #pragma once
 
 #include "types.hpp"
 
 namespace lob {
 
-// Intrusive doubly-linked list pointers are embedded directly in Order rather
-// than managed by std::list or a separate node allocator.  This means:
-//   1. No extra heap allocation per order beyond the Order object itself.
-//   2. O(1) removal from a PriceLevel given only an Order* — no search needed.
-//   3. Cache-friendly: following prev/next doesn't chase an extra pointer layer.
-// In Phase 2 we'll back Orders from a pool allocator so the object allocation
-// is also O(1) with no heap fragmentation.
+// prev/next live inside Order rather than in a separate list node so we can
+// remove any order from its price level in O(1) without a search, and with
+// one fewer heap allocation per order. Orders can't move in memory while on the book.
 struct Order {
     OrderId   id;
     Side      side;
     OrderType type;
     Price     price;
     Quantity  quantity;            // original submitted quantity
-    Quantity  remaining_quantity;  // decremented by fills
-    Timestamp timestamp;           // submission time in nanoseconds
+    Quantity  remaining_quantity;  // counts down as fills happen
+    Timestamp timestamp;           // arrival time in nanoseconds
 
-    // Intrusive list linkage within a PriceLevel.
     Order* prev{nullptr};
     Order* next{nullptr};
 };
