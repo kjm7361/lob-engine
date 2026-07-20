@@ -62,6 +62,23 @@ target_link_libraries(lob_itch
     PRIVATE ZLIB::ZLIB
 )
 
+# ── Replay driver ─────────────────────────────────────────────────────────────
+
+add_library(lob_replay
+    src/replay/replay.cpp
+)
+
+target_include_directories(lob_replay
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(lob_replay PUBLIC lob lob_itch)
+
+add_executable(replay src/replay/main.cpp)
+target_link_libraries(replay PRIVATE lob_replay)
+
 # ── Examples ──────────────────────────────────────────────────────────────────
 
 add_executable(simple_session examples/simple_session.cpp)

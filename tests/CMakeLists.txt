@@ -50,3 +50,17 @@ target_link_libraries(itch_tests
 )
 
 gtest_discover_tests(itch_tests)
+
+# ── Replay driver tests ───────────────────────────────────────────────────────
+
+add_executable(replay_tests
+    replay/replay_test.cpp
+)
+
+target_link_libraries(replay_tests
+    PRIVATE
+        lob_replay
+        GTest::gtest_main
+)
+
+gtest_discover_tests(replay_tests)
