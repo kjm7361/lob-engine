@@ -59,6 +59,32 @@ class MatchingEngine {
     // Remove a resting order. Fires on_rejected if the id is unknown.
     void cancel(OrderId id);
 
+    // Modify a resting order in place.
+    //   Quantity decrease, same price  → reduce in-place, order keeps FIFO position.
+    //   Price change or qty increase   → cancel + re-add at back of the target level's
+    //                                    queue (same order_id); fires on_cancelled then
+    //                                    on_accepted/on_trade as appropriate.
+    // Fires on_rejected(UnknownId) and returns without state change if id is not found.
+    void modify(OrderId id, std::optional<Price> new_price,
+                std::optional<Quantity> new_qty, Timestamp ts);
+
+    // ── Replay-mode operations ──────────────────────────────────────────────
+    // These bypass the matching loop and fire NO event callbacks.
+    // Used by the ITCH replay driver to reconstruct historical book state
+    // without triggering re-matching (exchanges already handled that).
+
+    // Place a resting order directly on the book without matching.
+    void insert_passive(Order* o);
+
+    // Reduce a resting order's remaining quantity in place.
+    // Removes the order from the book if the reduction is >= current remaining.
+    // Returns false if the id is not found.
+    bool reduce_passive(OrderId id, Quantity qty);
+
+    // Remove a resting order from the book without firing any callbacks.
+    // Returns false if the id is not found.
+    bool delete_passive(OrderId id);
+
     [[nodiscard]] const OrderBook& book() const noexcept { return book_; }
     [[nodiscard]] OrderBook&       book() noexcept { return book_; }
 

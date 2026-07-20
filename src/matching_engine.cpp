@@ -106,6 +106,70 @@ void MatchingEngine::match_market(Order* taker) {
     }
 }
 
+void MatchingEngine::modify(OrderId id, std::optional<Price> new_price,
+                            std::optional<Quantity> new_qty, Timestamp ts) {
+    Order* o = book_.find(id);
+    if (o == nullptr) {
+        if (handler_.on_rejected) handler_.on_rejected({id, RejectReason::UnknownId});
+        return;
+    }
+
+    Price    target_price = new_price.value_or(o->price);
+    Quantity target_qty   = new_qty.value_or(o->remaining_quantity);
+
+    bool price_changed  = (target_price != o->price);
+    bool qty_increased  = to_uint(target_qty) > to_uint(o->remaining_quantity);
+    bool loses_priority = price_changed || qty_increased;
+
+    if (!loses_priority) {
+        // Quantity decrease or no-op: patch in place, FIFO position preserved.
+        // book_.modify_order handles the level aggregate update.
+        book_.modify_order(id, std::nullopt, target_qty, nullptr);
+        return;
+    }
+
+    // Loses queue position: cancel the old slot, then re-add through the normal
+    // matching path (submit) so crossing prices execute immediately.
+    Quantity old_remaining = o->remaining_quantity;
+    book_.cancel_order(id);  // unlinks o from the level; o pointer stays valid
+    if (handler_.on_cancelled) handler_.on_cancelled({id, old_remaining});
+
+    // Reuse the same Order object — book_.cancel_order zeroed prev/next already.
+    o->price              = target_price;
+    o->quantity           = target_qty;
+    o->remaining_quantity = target_qty;
+    o->timestamp          = ts;
+    o->prev               = nullptr;
+    o->next               = nullptr;
+    submit(o);  // fires on_accepted if it rests, or on_trade events if it crosses
+}
+
+void MatchingEngine::insert_passive(Order* o) {
+    book_.add_order(o);
+}
+
+bool MatchingEngine::reduce_passive(OrderId id, Quantity qty) {
+    Order* o = book_.find(id);
+    if (o == nullptr) return false;
+
+    uint64_t rem = to_uint(o->remaining_quantity);
+    uint64_t red = to_uint(qty);
+
+    if (red >= rem) {
+        book_.cancel_order(id);
+    } else {
+        auto& side_map = (o->side == Side::Buy) ? book_.bids() : book_.asks();
+        auto  it       = side_map.find(o->price);
+        if (it != side_map.end())
+            it->second.adjust_quantity(o, Quantity{rem - red});
+    }
+    return true;
+}
+
+bool MatchingEngine::delete_passive(OrderId id) {
+    return book_.cancel_order(id);
+}
+
 void MatchingEngine::execute_fill(Order* maker, Order* taker, Quantity qty,
                                   Timestamp ts) {
     assert(to_uint(qty) > 0);

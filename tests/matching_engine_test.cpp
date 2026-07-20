@@ -373,3 +373,148 @@ TEST(MatchingEngine, FuzzAggregateInvariants) {
         check_invariants();
     }
 }
+
+// ── MatchingEngine::modify() tests ───────────────────────────────────────────
+
+TEST(MatchingEngineModify, QtyDecrease_KeepsFifoPosition) {
+    // o1 is at the front of the 100-bid level; decrease its qty.
+    // An incoming sell should still fill o1 first, not o2.
+    TestHandler h;
+    MatchingEngine me(h.make());
+    Pool p;
+
+    me.submit(p.limit(1, Side::Buy, 100, 20, 1));
+    me.submit(p.limit(2, Side::Buy, 100, 10, 2));
+
+    me.modify(OrderId{1}, std::nullopt, Quantity{5}, Timestamp{3});
+
+    // Sell 5 at 100 — must fill from order 1 (still at front despite qty reduction).
+    me.submit(p.limit(3, Side::Sell, 100, 5, 4));
+
+    ASSERT_EQ(h.trades.size(), 1u);
+    EXPECT_EQ(to_uint(h.trades[0].maker_id), 1u);
+    EXPECT_EQ(to_uint(h.trades[0].quantity), 5u);
+
+    // Order 1 is now fully consumed; order 2 remains untouched.
+    EXPECT_EQ(me.book().find(OrderId{1}), nullptr);
+    ASSERT_NE(me.book().find(OrderId{2}), nullptr);
+    EXPECT_EQ(to_uint(me.book().find(OrderId{2})->remaining_quantity), 10u);
+}
+
+TEST(MatchingEngineModify, PriceChange_LosesPosition) {
+    // o1 arrives first at 100, o2 second.
+    // Move o1 to price 99 — it goes to the back of the 99 level behind o2.
+    TestHandler h;
+    MatchingEngine me(h.make());
+    Pool p;
+
+    me.submit(p.limit(1, Side::Buy, 100, 10, 1));
+    me.submit(p.limit(2, Side::Buy,  99, 10, 2));
+
+    // on_cancelled fires for o1, then on_accepted fires for o1 at 99.
+    me.modify(OrderId{1}, Price{99}, std::nullopt, Timestamp{3});
+
+    ASSERT_EQ(h.cancelled.size(), 1u);
+    EXPECT_EQ(to_uint(h.cancelled[0].id), 1u);
+
+    // Sell 10 at 99 — should fill o2 first (it was earlier in the 99-level queue).
+    me.submit(p.limit(3, Side::Sell, 99, 10, 4));
+
+    ASSERT_GE(h.trades.size(), 1u);
+    EXPECT_EQ(to_uint(h.trades[0].maker_id), 2u);
+
+    // o1 should still be resting at 99 (unfilled this round).
+    ASSERT_NE(me.book().find(OrderId{1}), nullptr);
+    EXPECT_EQ(to_int(me.book().find(OrderId{1})->price), 99);
+}
+
+TEST(MatchingEngineModify, QtyIncrease_LosesPosition) {
+    // o1 arrives before o2 at price 100.  Increasing o1's qty loses its spot.
+    TestHandler h;
+    MatchingEngine me(h.make());
+    Pool p;
+
+    me.submit(p.limit(1, Side::Buy, 100, 5,  1));
+    me.submit(p.limit(2, Side::Buy, 100, 10, 2));
+
+    me.modify(OrderId{1}, std::nullopt, Quantity{15}, Timestamp{3});
+
+    // Sell 10 — should fill o2 (now at the front) entirely.
+    me.submit(p.limit(3, Side::Sell, 100, 10, 4));
+
+    ASSERT_GE(h.trades.size(), 1u);
+    EXPECT_EQ(to_uint(h.trades[0].maker_id), 2u);
+    EXPECT_EQ(to_uint(h.trades[0].quantity), 10u);
+
+    // o1 is still resting with 15 shares (re-added at back, not yet filled).
+    ASSERT_NE(me.book().find(OrderId{1}), nullptr);
+    EXPECT_EQ(to_uint(me.book().find(OrderId{1})->remaining_quantity), 15u);
+}
+
+TEST(MatchingEngineModify, ModifyIntoOpposite_Executes) {
+    // Resting ask at 100, resting bid at 98.
+    // Move the bid to 101 — it now crosses the ask and should execute immediately.
+    TestHandler h;
+    MatchingEngine me(h.make());
+    Pool p;
+
+    me.submit(p.limit(1, Side::Sell, 100, 10, 1));  // resting ask
+    me.submit(p.limit(2, Side::Buy,   98, 10, 2));  // resting bid
+
+    me.modify(OrderId{2}, Price{101}, std::nullopt, Timestamp{3});
+
+    // on_cancelled fires for o2 at 98, then it re-submits and crosses o1.
+    ASSERT_EQ(h.cancelled.size(), 1u);
+    EXPECT_EQ(to_uint(h.cancelled[0].id), 2u);
+
+    ASSERT_EQ(h.trades.size(), 1u);
+    EXPECT_EQ(to_uint(h.trades[0].maker_id), 1u);
+    EXPECT_EQ(to_uint(h.trades[0].taker_id), 2u);
+    EXPECT_EQ(to_int(h.trades[0].price), 100);   // maker's price
+    EXPECT_EQ(to_uint(h.trades[0].quantity), 10u);
+
+    // Both orders fully consumed.
+    EXPECT_EQ(me.book().find(OrderId{1}), nullptr);
+    EXPECT_EQ(me.book().find(OrderId{2}), nullptr);
+}
+
+TEST(MatchingEngineModify, UnknownId_Rejected) {
+    TestHandler h;
+    MatchingEngine me(h.make());
+
+    me.modify(OrderId{999}, Price{100}, std::nullopt, Timestamp{0});
+
+    ASSERT_EQ(h.rejected.size(), 1u);
+    EXPECT_EQ(to_uint(h.rejected[0].id), 999u);
+    EXPECT_EQ(h.rejected[0].reason, RejectReason::UnknownId);
+}
+
+TEST(MatchingEngineModify, PartialFillThenQtyDecrease_CorrectState) {
+    // Resting sell 20 at 101.  Partial fill of 7 (remaining=13).
+    // Then decrease qty to 6.  Then a buy of 6 completes the order.
+    TestHandler h;
+    MatchingEngine me(h.make());
+    Pool p;
+
+    me.submit(p.limit(1, Side::Sell, 101, 20, 1));
+    me.submit(p.limit(2, Side::Buy,  101,  7, 2));  // partial fill, 7 executed
+
+    ASSERT_EQ(h.trades.size(), 1u);
+    ASSERT_NE(me.book().find(OrderId{1}), nullptr);
+    EXPECT_EQ(to_uint(me.book().find(OrderId{1})->remaining_quantity), 13u);
+
+    // Decrease qty to 6 — order keeps FIFO position, no re-queue needed.
+    me.modify(OrderId{1}, std::nullopt, Quantity{6}, Timestamp{3});
+    ASSERT_NE(me.book().find(OrderId{1}), nullptr);
+    EXPECT_EQ(to_uint(me.book().find(OrderId{1})->remaining_quantity), 6u);
+
+    auto depth = me.book().ask_depth(5);
+    ASSERT_EQ(depth.size(), 1u);
+    EXPECT_EQ(to_uint(depth[0].total_quantity), 6u);
+
+    // Buy 6 — fills and removes order 1.
+    me.submit(p.limit(3, Side::Buy, 101, 6, 4));
+    ASSERT_EQ(h.trades.size(), 2u);
+    EXPECT_EQ(to_uint(h.trades[1].quantity), 6u);
+    EXPECT_EQ(me.book().find(OrderId{1}), nullptr);
+}
