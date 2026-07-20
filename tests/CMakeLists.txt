@@ -36,3 +36,17 @@ target_link_libraries(backtest_tests
 )
 
 gtest_discover_tests(backtest_tests)
+
+# ── ITCH parser tests ─────────────────────────────────────────────────────────
+
+add_executable(itch_tests
+    itch/parser_test.cpp
+)
+
+target_link_libraries(itch_tests
+    PRIVATE
+        lob_itch
+        GTest::gtest_main
+)
+
+gtest_discover_tests(itch_tests)

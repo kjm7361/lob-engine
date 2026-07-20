@@ -7,6 +7,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_compile_options(-Wall -Wextra -Werror -Wpedantic)
 
+find_package(ZLIB REQUIRED)
+
 # enable_testing() must live here (not in a subdirectory) so that
 # `ctest --test-dir <build>` can find tests registered by subdirectories.
 enable_testing()
@@ -42,6 +44,23 @@ target_include_directories(lob_backtest
 )
 
 target_link_libraries(lob_backtest PUBLIC lob)
+
+# ── ITCH 5.0 parser ──────────────────────────────────────────────────────────
+
+add_library(lob_itch
+    src/itch/parser.cpp
+)
+
+target_include_directories(lob_itch
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(lob_itch
+    PUBLIC  lob
+    PRIVATE ZLIB::ZLIB
+)
 
 # ── Examples ──────────────────────────────────────────────────────────────────
 
