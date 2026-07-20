@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "lob/matching_engine.hpp"
+#include "lob/matching_engine_t.hpp"
 
 using namespace lob;
 using Clock    = std::chrono::high_resolution_clock;
@@ -406,6 +407,71 @@ static BenchResult bench_mixed(size_t N, uint32_t seed) {
     return make_result("Mixed", N, lats, ctx.trades, depth);
 }
 
+// ── Scenario 5: CRTP vs std::function (CrossSpread, same N) ──────────────────
+// Runs the identical CrossSpread workload through both engines and measures the
+// per-dispatch overhead of std::function vs a direct method call.
+
+struct CountingHandler {
+    size_t trades{0};
+    void on_trade    (const TradeEvent& e) { ++trades; g_sink += to_uint(e.quantity); }
+    void on_accepted (const OrderAccepted&)  noexcept {}
+    void on_cancelled(const OrderCancelled&) noexcept {}
+    void on_rejected (const OrderRejected&)  noexcept {}
+};
+
+static std::pair<BenchResult, BenchResult> bench_crtp_vs_stdfn(size_t N) {
+    Pool pool_a(2 * N), pool_b(2 * N);
+
+    // ── std::function engine ──
+    BenchResult r_stdfn;
+    {
+        size_t trade_count = 0;
+        MatchingEngine eng(EventHandler{
+            [&](const TradeEvent& e) {
+                ++trade_count;
+                g_sink += to_uint(e.quantity);
+            },
+            nullptr, nullptr, nullptr,
+        });
+        for (size_t i = 0; i < N; ++i)
+            eng.submit(pool_a.take(i + 1, Side::Sell, OrderType::Limit, 101, 1, i));
+        trade_count = 0;
+
+        std::vector<int64_t> lats;
+        lats.reserve(N);
+        for (size_t i = 0; i < N; ++i) {
+            Order* o = pool_a.take(N + i + 1, Side::Buy, OrderType::Limit, 101, 1, N + i);
+            auto t0 = Clock::now();
+            eng.submit(o);
+            auto t1 = Clock::now();
+            lats.push_back(std::chrono::duration_cast<NsCount>(t1 - t0).count());
+        }
+        r_stdfn = make_result("std::function", N, lats, trade_count, 0);
+    }
+
+    // ── CRTP/template engine ──
+    BenchResult r_crtp;
+    {
+        MatchingEngineT<CountingHandler> eng;
+        for (size_t i = 0; i < N; ++i)
+            eng.submit(pool_b.take(i + 1, Side::Sell, OrderType::Limit, 101, 1, i));
+        eng.handler().trades = 0;
+
+        std::vector<int64_t> lats;
+        lats.reserve(N);
+        for (size_t i = 0; i < N; ++i) {
+            Order* o = pool_b.take(N + i + 1, Side::Buy, OrderType::Limit, 101, 1, N + i);
+            auto t0 = Clock::now();
+            eng.submit(o);
+            auto t1 = Clock::now();
+            lats.push_back(std::chrono::duration_cast<NsCount>(t1 - t0).count());
+        }
+        r_crtp = make_result("CRTP/template", N, lats, eng.handler().trades, 0);
+    }
+
+    return {r_stdfn, r_crtp};
+}
+
 // ── Output ────────────────────────────────────────────────────────────────────
 
 static void print_header() {
@@ -490,6 +556,24 @@ int main(int argc, char* argv[]) {
         auto r2 = bench_cross_spread(N, SEED);  print_row(r2); all_results.push_back(r2);
         auto r3 = bench_cancel(N, SEED);        print_row(r3); all_results.push_back(r3);
         auto r4 = bench_mixed(N, SEED);         print_row(r4); all_results.push_back(r4);
+    }
+
+    // Scenario 5: CRTP vs std::function comparison (at 100 K ops).
+    {
+        constexpr size_t COMP_N = 100'000;
+        std::cout << "\n── CRTP vs std::function (CrossSpread N=" << COMP_N << ") ──\n";
+        print_header();
+        auto [r_sf, r_crtp] = bench_crtp_vs_stdfn(COMP_N);
+        print_row(r_sf);
+        print_row(r_crtp);
+        if (r_sf.avg_ns > 0.0) {
+            double speedup = r_sf.avg_ns / r_crtp.avg_ns;
+            std::cout << "  → CRTP speedup: " << std::fixed << std::setprecision(2)
+                      << speedup << "x  (avg latency "
+                      << r_sf.avg_ns << " ns → " << r_crtp.avg_ns << " ns)\n";
+        }
+        all_results.push_back(r_sf);
+        all_results.push_back(r_crtp);
     }
 
     std::cout << "\n[sink=" << g_sink << "]\n";  // prevents dead-code elimination

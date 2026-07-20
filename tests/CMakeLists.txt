@@ -12,6 +12,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(lob_tests
     order_book_test.cpp
     matching_engine_test.cpp
+    matching_engine_t_test.cpp
 )
 
 target_link_libraries(lob_tests
